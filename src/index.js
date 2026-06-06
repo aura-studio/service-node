@@ -559,7 +559,8 @@ async function dispatchWebTarget(app, req, res) {
   }
 
   if (app && typeof app.handle === "function") {
-    await new Promise((resolve, reject) => {
+    await new Promise(async (resolve, reject) => {
+      const finished = waitForResponse(res);
       const next = (err) => {
         if (err) {
           reject(err);
@@ -571,8 +572,14 @@ async function dispatchWebTarget(app, req, res) {
         }
         resolve();
       };
-      const result = app.handle(req, res, next);
-      resolveWhenHandled(result, res, resolve, reject);
+      try {
+        const result = app.handle(req, res, next);
+        if (result && typeof result.then === "function") await result;
+        await finished;
+        resolve();
+      } catch (err) {
+        reject(err);
+      }
     });
     return;
   }
@@ -581,27 +588,25 @@ async function dispatchWebTarget(app, req, res) {
 }
 
 async function callRequestHandler(handler, req, res) {
-  await new Promise((resolve, reject) => {
+  await new Promise(async (resolve, reject) => {
+    const finished = waitForResponse(res);
     const result = handler(req, res);
-    resolveWhenHandled(result, res, resolve, reject);
+    try {
+      if (result && typeof result.then === "function") await result;
+      await finished;
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
-function resolveWhenHandled(result, res, resolve, reject) {
-  if (result && typeof result.then === "function") {
-    result.then(() => {
-      if (res.writableEnded) resolve();
-      else res.once("finish", resolve);
-    }, reject);
-    return;
-  }
-
-  if (res.writableEnded) {
-    resolve();
-    return;
-  }
-
-  res.once("finish", resolve);
+function waitForResponse(res) {
+  if (res.writableEnded) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    res.once("finish", resolve);
+    res.once("error", reject);
+  });
 }
 
 function webResponseMeta(res) {
