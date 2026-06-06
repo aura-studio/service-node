@@ -455,6 +455,15 @@ class CaptureResponse extends Writable {
     this.headers = new Map();
     this.chunks = [];
     this.headersSent = false;
+
+    this.writeHead = this.writeHead.bind(this);
+    this.setHeader = this.setHeader.bind(this);
+    this.getHeader = this.getHeader.bind(this);
+    this.getHeaders = this.getHeaders.bind(this);
+    this.removeHeader = this.removeHeader.bind(this);
+    this.write = this.write.bind(this);
+    this.end = this.end.bind(this);
+    this.finished = this.finished.bind(this);
   }
 
   _write(chunk, _encoding, callback) {
