@@ -455,6 +455,10 @@ class CaptureResponse extends Writable {
     this.headers = new Map();
     this.chunks = [];
     this.headersSent = false;
+    this._captureEnded = false;
+    this._bodyPromise = new Promise((resolve) => {
+      this._resolveBody = resolve;
+    });
 
     this._write = this._write.bind(this);
     this.writeHead = this.writeHead.bind(this);
@@ -471,6 +475,19 @@ class CaptureResponse extends Writable {
     this.headersSent = true;
     this.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     callback();
+  }
+
+  write(chunk, encoding, callback) {
+    if (typeof encoding === "function") {
+      callback = encoding;
+      encoding = undefined;
+    }
+    if (chunk != null) {
+      this.headersSent = true;
+      this.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding));
+    }
+    if (typeof callback === "function") callback();
+    return true;
   }
 
   writeHead(statusCode, statusMessage, headers) {
@@ -515,7 +532,11 @@ class CaptureResponse extends Writable {
       encoding = undefined;
     }
     if (chunk != null) this.write(chunk, encoding);
-    return super.end(callback);
+    this._captureEnded = true;
+    this._resolveBody(Buffer.concat(this.chunks));
+    this.emit("finish");
+    if (typeof callback === "function") callback();
+    return this;
   }
 
   status(statusCode) {
@@ -539,11 +560,8 @@ class CaptureResponse extends Writable {
   }
 
   body() {
-    if (this.writableEnded) return Promise.resolve(Buffer.concat(this.chunks));
-    return new Promise((resolve, reject) => {
-      this.once("finish", () => resolve(Buffer.concat(this.chunks)));
-      this.once("error", reject);
-    });
+    if (this._captureEnded) return Promise.resolve(Buffer.concat(this.chunks));
+    return this._bodyPromise;
   }
 }
 
@@ -566,7 +584,7 @@ async function dispatchWebTarget(app, req, res) {
           reject(err);
           return;
         }
-        if (!res.writableEnded) {
+        if (!res._captureEnded) {
           res.statusCode = 404;
           res.end("not found");
         }
@@ -602,11 +620,7 @@ async function callRequestHandler(handler, req, res) {
 }
 
 function waitForResponse(res) {
-  if (res.writableEnded) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    res.once("finish", resolve);
-    res.once("error", reject);
-  });
+  return res.body().then(() => undefined);
 }
 
 function webResponseMeta(res) {
