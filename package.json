@@ -1,6 +1,6 @@
 {
   "name": "@aura-studio/service-node",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Wrap a service object as an Aura Studio TunnelNode",
   "main": "src/index.js",
   "files": [

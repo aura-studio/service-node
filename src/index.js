@@ -200,6 +200,10 @@ function loadTunnelNode() {
 
 function createBundledTunnelNode() {
   const brand = Symbol.for("aura-studio.tunnel-node");
+  const bundledMetaToString = (value) => {
+    if (value == null) return "";
+    return typeof value === "string" ? value : JSON.stringify(value);
+  };
 
   class BundledTunnelNode {
     constructor() {
@@ -224,7 +228,7 @@ function createBundledTunnelNode() {
 
   return {
     TunnelNode: BundledTunnelNode,
-    metaToString,
+    metaToString: bundledMetaToString,
     isTunnelNode(value) {
       if (!value) return false;
       if (value[brand] === true) return true;
