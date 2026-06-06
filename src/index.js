@@ -1,5 +1,10 @@
 "use strict";
 
+const { EventEmitter } = require("node:events");
+const http = require("node:http");
+const { Readable, Writable } = require("node:stream");
+const { URLSearchParams } = require("node:url");
+
 const {
   TunnelNode,
   metaToString,
@@ -116,13 +121,68 @@ class ServiceTunnel extends TunnelNode {
   }
 }
 
+class WebTunnel extends TunnelNode {
+  constructor(app, options = {}) {
+    super();
+    assertWebTarget(app);
+
+    this.app = app;
+    this.options = {
+      defaultMethod: "POST",
+      ...options,
+    };
+  }
+
+  async invoke(route, request) {
+    try {
+      const reqEnv = parseEnvelope(request);
+      const rawData = decodeBase64(reqEnv.data);
+      const req = createWebRequest(route, reqEnv.meta, rawData, this.options);
+      const res = new CaptureResponse(req);
+
+      await dispatchWebTarget(this.app, req, res);
+      const body = await res.finished();
+      return encodeEnvelope(webResponseMeta(res), body);
+    } catch (err) {
+      return encodeEnvelope(
+        {
+          Status: 500,
+          Error: err && err.message ? err.message : String(err),
+        },
+        ""
+      );
+    }
+  }
+}
+
 function createService(app, options) {
   return new ServiceTunnel(app, options);
+}
+
+function createWebService(app, options) {
+  return new WebTunnel(app, options);
 }
 
 function assertServiceTarget(app) {
   if (!app || typeof app !== "object" || Array.isArray(app)) {
     throw new TypeError("service.new(app) requires a non-null service object");
+  }
+}
+
+function assertWebTarget(app) {
+  if (!app) {
+    throw new TypeError("service.web(app) requires a web application target");
+  }
+
+  const isHandler = typeof app === "function";
+  const isExpress = app && typeof app.handle === "function";
+  const isKoa = app && typeof app.callback === "function";
+  const isServer = app instanceof http.Server || typeof app.emit === "function";
+
+  if (!isHandler && !isExpress && !isKoa && !isServer) {
+    throw new TypeError(
+      "service.web(app) requires a Node handler, Express/Koa app, or http.Server"
+    );
   }
 }
 
@@ -251,6 +311,251 @@ function encodePayload(data) {
   return Buffer.from(JSON.stringify(data), "utf8");
 }
 
+function createWebRequest(route, meta, rawData, options) {
+  const headers = normalizeHeaders(meta);
+  if (rawData.length > 0 && headers["content-length"] == null) {
+    headers["content-length"] = String(rawData.length);
+  }
+
+  const req = Readable.from([rawData]);
+  req.method = String(meta.Method || options.defaultMethod || "POST").toUpperCase();
+  req.url = resolveRequestUrl(route, meta);
+  req.originalUrl = req.url;
+  req.headers = headers;
+  req.rawHeaders = rawHeadersFrom(headers);
+  req.httpVersion = "1.1";
+  req.httpVersionMajor = 1;
+  req.httpVersionMinor = 1;
+  req.socket = new EventEmitter();
+  req.socket.encrypted = false;
+  req.connection = req.socket;
+  return req;
+}
+
+function resolveRequestUrl(route, meta) {
+  const path = meta.Path || route || "/";
+  const query = queryToString(meta.Query);
+  if (!query) return ensureLeadingSlash(path);
+
+  const url = ensureLeadingSlash(path);
+  return `${url}${url.includes("?") ? "&" : "?"}${query}`;
+}
+
+function ensureLeadingSlash(value) {
+  const text = String(value || "/");
+  return text.startsWith("/") ? text : `/${text}`;
+}
+
+function queryToString(value) {
+  if (value == null || value === "") return "";
+  if (typeof value === "string") return value.replace(/^\?/, "");
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return new URLSearchParams(value).toString();
+  }
+  return String(value);
+}
+
+function normalizeHeaders(meta) {
+  const headers = {};
+  const source =
+    (meta.Headers && typeof meta.Headers === "object" && meta.Headers) ||
+    (meta.Header && typeof meta.Header === "object" && meta.Header) ||
+    {};
+
+  for (const [key, value] of Object.entries(source)) {
+    if (value == null) continue;
+    headers[key.toLowerCase()] = Array.isArray(value)
+      ? value.map(String)
+      : String(value);
+  }
+
+  for (const [key, value] of Object.entries(meta || {})) {
+    if (!key.startsWith("Header.") || value == null) continue;
+    headers[key.slice("Header.".length).toLowerCase()] = String(value);
+  }
+
+  return headers;
+}
+
+function rawHeadersFrom(headers) {
+  const raw = [];
+  for (const [key, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) {
+      for (const item of value) raw.push(key, item);
+    } else {
+      raw.push(key, value);
+    }
+  }
+  return raw;
+}
+
+class CaptureResponse extends Writable {
+  constructor(req) {
+    super();
+    this.req = req;
+    this.statusCode = 200;
+    this.statusMessage = "OK";
+    this.headers = new Map();
+    this.chunks = [];
+    this.headersSent = false;
+  }
+
+  _write(chunk, _encoding, callback) {
+    this.headersSent = true;
+    this.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    callback();
+  }
+
+  writeHead(statusCode, statusMessage, headers) {
+    this.statusCode = Number(statusCode) || this.statusCode;
+    if (typeof statusMessage === "string") {
+      this.statusMessage = statusMessage;
+    } else {
+      headers = statusMessage;
+    }
+    if (headers) {
+      for (const [key, value] of Object.entries(headers)) {
+        this.setHeader(key, value);
+      }
+    }
+    this.headersSent = true;
+    return this;
+  }
+
+  setHeader(name, value) {
+    this.headers.set(String(name).toLowerCase(), { name: String(name), value });
+    return this;
+  }
+
+  getHeader(name) {
+    const entry = this.headers.get(String(name).toLowerCase());
+    return entry && entry.value;
+  }
+
+  getHeaders() {
+    const headers = {};
+    for (const entry of this.headers.values()) headers[entry.name] = entry.value;
+    return headers;
+  }
+
+  removeHeader(name) {
+    this.headers.delete(String(name).toLowerCase());
+  }
+
+  end(chunk, encoding, callback) {
+    if (typeof encoding === "function") {
+      callback = encoding;
+      encoding = undefined;
+    }
+    if (chunk != null) this.write(chunk, encoding);
+    return super.end(callback);
+  }
+
+  status(statusCode) {
+    this.statusCode = Number(statusCode) || this.statusCode;
+    return this;
+  }
+
+  send(body) {
+    if (body != null && typeof body === "object" && !Buffer.isBuffer(body)) {
+      if (!this.getHeader("content-type")) {
+        this.setHeader("content-type", "application/json");
+      }
+      return this.end(JSON.stringify(body));
+    }
+    return this.end(body);
+  }
+
+  json(body) {
+    this.setHeader("content-type", "application/json");
+    return this.end(JSON.stringify(body));
+  }
+
+  finished() {
+    if (this.writableEnded) return Promise.resolve(Buffer.concat(this.chunks));
+    return new Promise((resolve, reject) => {
+      this.once("finish", () => resolve(Buffer.concat(this.chunks)));
+      this.once("error", reject);
+    });
+  }
+}
+
+async function dispatchWebTarget(app, req, res) {
+  if (app instanceof http.Server) {
+    app.emit("request", req, res);
+    return;
+  }
+
+  if (app && typeof app.callback === "function") {
+    await callRequestHandler(app.callback(), req, res);
+    return;
+  }
+
+  if (app && typeof app.handle === "function") {
+    await new Promise((resolve, reject) => {
+      const next = (err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        if (!res.writableEnded) {
+          res.statusCode = 404;
+          res.end("not found");
+        }
+        resolve();
+      };
+      const result = app.handle(req, res, next);
+      resolveWhenHandled(result, res, resolve, reject);
+    });
+    return;
+  }
+
+  await callRequestHandler(app, req, res);
+}
+
+async function callRequestHandler(handler, req, res) {
+  await new Promise((resolve, reject) => {
+    const result = handler(req, res);
+    resolveWhenHandled(result, res, resolve, reject);
+  });
+}
+
+function resolveWhenHandled(result, res, resolve, reject) {
+  if (result && typeof result.then === "function") {
+    result.then(() => {
+      if (res.writableEnded) resolve();
+      else res.once("finish", resolve);
+    }, reject);
+    return;
+  }
+
+  if (res.writableEnded) {
+    resolve();
+    return;
+  }
+
+  res.once("finish", resolve);
+}
+
+function webResponseMeta(res) {
+  const headers = {};
+  for (const [key, entry] of res.headers) {
+    headers[key] = entry.value;
+  }
+
+  const meta = {
+    Status: res.statusCode,
+    Headers: headers,
+  };
+
+  const contentType = res.getHeader("content-type");
+  if (contentType != null) meta.ContentType = Array.isArray(contentType)
+    ? contentType[0]
+    : String(contentType);
+
+  return meta;
+}
+
 function splitRoute(route) {
   return String(route || "")
     .replace(/^\/+|\/+$/g, "")
@@ -303,8 +608,12 @@ function unique(values) {
 module.exports = {
   new: createService,
   create: createService,
+  web: createWebService,
+  createWeb: createWebService,
   Service: ServiceTunnel,
   ServiceTunnel,
+  Web: WebTunnel,
+  WebTunnel,
   Context: ServiceContext,
   ServiceContext,
   isTunnelNode,
