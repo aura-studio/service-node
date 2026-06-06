@@ -141,7 +141,7 @@ class WebTunnel extends TunnelNode {
       const res = new CaptureResponse(req);
 
       await dispatchWebTarget(this.app, req, res);
-      const body = await res.finished();
+      const body = await res.body();
       return encodeEnvelope(webResponseMeta(res), body);
     } catch (err) {
       return encodeEnvelope(
@@ -464,7 +464,7 @@ class CaptureResponse extends Writable {
     this.removeHeader = this.removeHeader.bind(this);
     this.write = this.write.bind(this);
     this.end = this.end.bind(this);
-    this.finished = this.finished.bind(this);
+    this.body = this.body.bind(this);
   }
 
   _write(chunk, _encoding, callback) {
@@ -538,7 +538,7 @@ class CaptureResponse extends Writable {
     return this.end(JSON.stringify(body));
   }
 
-  finished() {
+  body() {
     if (this.writableEnded) return Promise.resolve(Buffer.concat(this.chunks));
     return new Promise((resolve, reject) => {
       this.once("finish", () => resolve(Buffer.concat(this.chunks)));
