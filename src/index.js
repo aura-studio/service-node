@@ -190,8 +190,61 @@ function loadTunnelNode() {
   try {
     return require("@aura-studio/tunnel-node");
   } catch (_) {
-    return require("../../tunnel-node/src");
+    try {
+      return require("../../tunnel-node/src");
+    } catch (_) {
+      return createBundledTunnelNode();
+    }
   }
+}
+
+function createBundledTunnelNode() {
+  const brand = Symbol.for("aura-studio.tunnel-node");
+
+  class BundledTunnelNode {
+    constructor() {
+      Object.defineProperty(this, brand, {
+        value: true,
+        enumerable: false,
+      });
+    }
+
+    async init() {}
+    async invoke() {
+      throw new Error("TunnelNode.invoke(route, request) is not implemented");
+    }
+    async meta() { return ""; }
+    async close() {}
+
+    Init() { return this.init(); }
+    Invoke(route, request) { return this.invoke(route, request); }
+    Meta() { return this.meta(); }
+    Close() { return this.close(); }
+  }
+
+  return {
+    TunnelNode: BundledTunnelNode,
+    metaToString,
+    isTunnelNode(value) {
+      if (!value) return false;
+      if (value[brand] === true) return true;
+      return (
+        hasMethod(value, "init") &&
+        hasMethod(value, "invoke") &&
+        hasMethod(value, "meta") &&
+        hasMethod(value, "close")
+      ) || (
+        hasMethod(value, "Init") &&
+        hasMethod(value, "Invoke") &&
+        hasMethod(value, "Meta") &&
+        hasMethod(value, "Close")
+      );
+    },
+  };
+}
+
+function hasMethod(value, name) {
+  return value && typeof value[name] === "function";
 }
 
 function collectRoutes(app) {
