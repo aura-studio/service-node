@@ -456,6 +456,7 @@ class CaptureResponse extends Writable {
     this.chunks = [];
     this.headersSent = false;
 
+    this._write = this._write.bind(this);
     this.writeHead = this.writeHead.bind(this);
     this.setHeader = this.setHeader.bind(this);
     this.getHeader = this.getHeader.bind(this);
