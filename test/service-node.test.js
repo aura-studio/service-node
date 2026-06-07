@@ -256,6 +256,92 @@ test("service.web supports http.Server request targets", async () => {
   assert.equal(rsp.data, "");
 });
 
+test("service.web preserves multipart/form-data as raw body with headers", async () => {
+  const boundary = "----service-node-test-boundary";
+  const multipartBody = [
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="field"',
+    "",
+    "value",
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="file"; filename="hello.txt"',
+    "Content-Type: text/plain",
+    "",
+    "hello file",
+    `--${boundary}--`,
+    "",
+  ].join("\r\n");
+
+  const tunnel = service.web(async (req, res) => {
+    const body = await readRequestBody(req);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      contentType: req.headers["content-type"],
+      contentLength: req.headers["content-length"],
+      body,
+    }));
+  });
+
+  const rsp = decodeEnvelope(await tunnel.invoke(
+    "/upload",
+    rawEnvelope(multipartBody, {
+      Method: "POST",
+      Headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      },
+    })
+  ));
+
+  assert.equal(rsp.meta.Status, 200);
+  assert.deepEqual(JSON.parse(rsp.data), {
+    contentType: `multipart/form-data; boundary=${boundary}`,
+    contentLength: String(Buffer.byteLength(multipartBody)),
+    body: multipartBody,
+  });
+});
+
+test("service.web captures chunked responses and larger payloads", async () => {
+  const requestBody = "req-".repeat(64 * 1024);
+  const responseChunk = "rsp-".repeat(64 * 1024);
+
+  const tunnel = service.web(async (req, res) => {
+    const body = await readRequestBody(req);
+    assert.equal(body, requestBody);
+    res.setHeader("content-type", "text/plain");
+    res.write(responseChunk.slice(0, responseChunk.length / 2));
+    setImmediate(() => {
+      res.end(responseChunk.slice(responseChunk.length / 2));
+    });
+  });
+
+  const rsp = decodeEnvelope(await tunnel.invoke(
+    "/large",
+    rawEnvelope(requestBody, { Method: "POST" })
+  ));
+
+  assert.equal(rsp.meta.Status, 200);
+  assert.equal(rsp.meta.ContentType, "text/plain");
+  assert.equal(rsp.data, responseChunk);
+});
+
+test("service.web follows Go wire string semantics for request and response bodies", async () => {
+  const body = "plain string, not JSON quoted";
+  const tunnel = service.web(async (req, res) => {
+    assert.equal(await readRequestBody(req), body);
+    res.setHeader("content-type", "text/plain");
+    res.end(`echo:${body}`);
+  });
+
+  const rsp = decodeEnvelope(await tunnel.invoke(
+    "/echo-string",
+    rawEnvelope(body, { Method: "POST" })
+  ));
+
+  assert.equal(rsp.meta.Status, 200);
+  assert.equal(rsp.meta.ContentType, "text/plain");
+  assert.equal(rsp.data, `echo:${body}`);
+});
+
 test("service.web leaves service.new object behavior unchanged", async () => {
   const tunnel = service.new({
     echo(_ctx, input) {

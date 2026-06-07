@@ -36,7 +36,7 @@ plain Node HTTP handlers without writing one adapter per business module.
 
 ## Later
 
-- [ ] Evaluate multipart/form-data support.
-- [ ] Evaluate streaming responses and large payload limits.
-- [ ] Document risk module integration example.
-- [ ] Compare behavior against Go wire request/response string semantics.
+- [x] ~~Evaluate multipart/form-data support.~~
+- [x] ~~Evaluate streaming responses and large payload limits.~~
+- [x] ~~Document risk module integration example.~~
+- [x] ~~Compare behavior against Go wire request/response string semantics.~~
