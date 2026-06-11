@@ -129,6 +129,7 @@ class WebTunnel extends TunnelNode {
     this.app = app;
     this.options = {
       defaultMethod: "POST",
+      defaultContentType: "application/json",
       ...options,
     };
   }
@@ -372,6 +373,18 @@ function createWebRequest(route, meta, rawData, options) {
   const headers = normalizeHeaders(meta);
   if (rawData.length > 0 && headers["content-length"] == null) {
     headers["content-length"] = String(rawData.length);
+  }
+  // Tunnel callers (reqresp engine) carry no headers in meta, so a synthesized
+  // request would land in the web app without a content-type and body parsers
+  // like express.json() would silently skip it. Service data is JSON by
+  // platform convention; default the header when the caller did not set one.
+  // Pass defaultContentType: "" / null to disable.
+  if (
+    rawData.length > 0 &&
+    headers["content-type"] == null &&
+    options.defaultContentType
+  ) {
+    headers["content-type"] = String(options.defaultContentType);
   }
 
   const req = Readable.from([rawData]);
